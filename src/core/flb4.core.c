@@ -16,108 +16,51 @@
 #include <linux/tcp.h>
 #include <sys/cdefs.h>
 
+#include "flb4_structs.h"
+#include "flb4_maps.h"
 
-// Константы - вынести в header
-
-#define IP_FRAGMENTED (0x3FFF)
-
-#define SOURCE_IP  (0xC0A800B3)
-#define VIRTUAL_IP (0xC0A800C2)
-// #define VIRTUAL_IP (0xC0A80079)
-#define REAL_IP    (0xC0A80026)
-
-// -----------------------------
-
-static __always_inline void print_ip(const char* msg, __u32 ip) {
-    bpf_printk("%s %d.%d.%d.%d", msg ? msg : "",
-                                (ip & 0xFF000000) >> 24,
-                                (ip & 0x00FF0000) >> 16,
-                                (ip & 0x0000FF00) >> 8,
-                                (ip & 0x000000FF));
-}
-
-static __always_inline __u16 csum_fold_helper(__u32 csum) {
-    __u32 sum = csum;
-    while (sum >> 16)
-        sum = (sum & 0xffff) + (sum >> 16);
-    return ~sum;
-}
-
-static __always_inline __u16 ipv4_csum(__u32 csum, struct iphdr *iph) {
-    csum = bpf_csum_diff(0, 0, (__be32 *)iph, sizeof(*iph), csum);
-    return csum_fold_helper(csum);
-}
+static int real_idx = 0;
 
 __attribute__((__always_inline__))
 static inline int process_packet(void* data, void* data_end, __u64 offset) {
 
-	struct ethhdr* eth = (struct ethhdr*)data;
-	VALIDATE_HEADER(eth, data_end);
-
-
-	struct iphdr* ip = data + offset;
+	struct iphdr* ip = (struct iphdr*)((__u8*)data + offset);
+	// struct iphdr* ip = (__u8*)data + offset;
 	VALIDATE_HEADER(ip, data_end);
 
-	// print_ip("ip: ", bpf_ntohl(ip->saddr));
+    struct vs_info* info = (struct vs_info*)NULL;
 
-	if (ip->daddr == bpf_htonl(VIRTUAL_IP) && ip->saddr != bpf_htonl(REAL_IP)) {
-		ip->daddr = bpf_htonl(REAL_IP);
-		ip->saddr = bpf_htonl(VIRTUAL_IP);
+    __u32 vip = bpf_ntohl(ip->daddr);
 
-		//
-		eth->h_dest[0] = 0xd4;
-		eth->h_dest[1] = 0xdc;
-		eth->h_dest[2] = 0xcd;
-		eth->h_dest[3] = 0xf2;
-		eth->h_dest[4] = 0xb1;
-		eth->h_dest[5] = 0xe8;
+    info = (struct vs_info*)(bpf_map_lookup_elem(&vs_map, &vip));
 
-		eth->h_source[0] = 0x18;
-		eth->h_source[1] = 0xc0;
-		eth->h_source[2] = 0x4d;
-		eth->h_source[3] = 0x0e;
-		eth->h_source[4] = 0xa1;
-		eth->h_source[5] = 0x38;
-		// Пересчитываем контрольную сумму IP-заголовка
-		ip->check = 0;
-		ip->check = ipv4_csum(0, ip);
+    if (!info) {
+        return XDP_PASS;
+    }
 
-		// return bpf_redirect(2, 0);
-		return XDP_TX;
-	}
+    if (info->change_src_ip) {
+        ip->saddr = bpf_htons(vip);
+    }
 
-	if (ip->saddr == bpf_htonl(REAL_IP)) {
-		ip->saddr = bpf_htonl(VIRTUAL_IP);
-		ip->daddr = bpf_htonl(SOURCE_IP);
+    __u8   real_count_idx = 0;
+    __u32* real_count     = (__u32*)(bpf_map_lookup_elem(&real_servers_count, &real_count_idx));
 
-		eth->h_dest[0] = 0xdc;
-		eth->h_dest[1] = 0x21;
-		eth->h_dest[2] = 0x5c;
-		eth->h_dest[3] = 0x67;
-		eth->h_dest[4] = 0x7c;
-		eth->h_dest[5] = 0xd5;
+    if (!real_count) {
+        return XDP_PASS;
+    }
 
-		eth->h_source[0] = 0x18;
-		eth->h_source[1] = 0xc0;
-		eth->h_source[2] = 0x4d;
-		eth->h_source[3] = 0x0e;
-		eth->h_source[4] = 0xa1;
-		eth->h_source[5] = 0x38;
+    __u32  real_server_idx = (real_idx++) % *real_count;
+    __u32* real_addr = (__u32*)(bpf_map_lookup_elem(&real_servers_map, &real_server_idx));
 
-		// Пересчитываем контрольную сумму IP-заголовка
-		ip->check = 0;
-		ip->check = ipv4_csum(0, ip);
+    ip->daddr = bpf_htonl(*real_addr);
 
-		return XDP_TX;
-		// return bpf_redirect(2, 0);
-	}
+    ip->check = 0;
+    ip->check = ipv4_csum(0, ip);
 
-
-
-	return XDP_PASS;
+	return XDP_TX;
 }
 
-SEC("xdp/flb4")
+SEC("xdp")
 int balancer_main(struct xdp_md* ctx) {
 	void *data     = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;

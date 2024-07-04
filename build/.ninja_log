@@ -1,0 +1,5 @@
+# ninja log v5
+2	59	1720004329134876894	flb4.core.o	b47d002318bef07a
+2	59	1720004329134876894	/home/fafaq/repos/projects/flb4/build/flb4.core.o	b47d002318bef07a
+59	125	1720004858837002101	src/usr/CMakeFiles/flb4.dir/main.cpp.o	727b42e684b017c0
+126	196	1720004858907003407	/home/fafaq/repos/projects/flb4/run/flb4	96956641e2bb6db6
