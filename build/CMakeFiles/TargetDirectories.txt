@@ -1,8 +1,0 @@
-/home/fafaq/repos/projects/flb4/build/CMakeFiles/edit_cache.dir
-/home/fafaq/repos/projects/flb4/build/CMakeFiles/rebuild_cache.dir
-/home/fafaq/repos/projects/flb4/build/src/core/CMakeFiles/flb4_bpf.dir
-/home/fafaq/repos/projects/flb4/build/src/core/CMakeFiles/edit_cache.dir
-/home/fafaq/repos/projects/flb4/build/src/core/CMakeFiles/rebuild_cache.dir
-/home/fafaq/repos/projects/flb4/build/src/usr/CMakeFiles/flb4.dir
-/home/fafaq/repos/projects/flb4/build/src/usr/CMakeFiles/edit_cache.dir
-/home/fafaq/repos/projects/flb4/build/src/usr/CMakeFiles/rebuild_cache.dir
