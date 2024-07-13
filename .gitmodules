@@ -1,0 +1,6 @@
+[submodule "submodules/libbpf"]
+	path = submodules/libbpf
+	url = git@github.com:libbpf/libbpf.git
+[submodule "submodules/yaml-cpp"]
+	path = submodules/yaml-cpp
+	url = https://git.termidesk.ru/termidesk/3d-party/yaml-cpp.git

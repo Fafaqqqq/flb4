@@ -14,5 +14,7 @@ set(RUN_DIR ${CMAKE_SOURCE_DIR}/run)
 
 project(${target})
 
-add_subdirectory(src/core)
-add_subdirectory(src/usr)
+add_subdirectory(src)
+add_subdirectory(src/bpf)
+
+add_subdirectory(submodules/yaml-cpp)

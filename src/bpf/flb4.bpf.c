@@ -1,8 +1,5 @@
 #include <linux/types.h>
 
-#include "flb4_structs.h"
-#include "flb4_helper.h"
-
 // Заголовки bpf-функций
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -17,52 +14,10 @@
 #include <sys/socket.h>
 #include <sys/cdefs.h>
 
-
-#ifndef memcpy
-    #define memcpy __builtin_memcpy
-#endif
-
-#ifndef memset
-    #define memset __builtin_memset
-#endif
-
-// Константы - вынести в header
-#define IP_FRAGMENTED (0x3FFF)
-
-#define SOURCE_IP  (0x0A8CE2F4)
-#define VIRTUAL_IP_ETH1 (0x0A8C00C9)
-#define VIRTUAL_IP_ETH2 (0x0A9600C8)
-#define REAL_IP  (0x0A960064)
-
-static __always_inline
-__u16 csum_fold_helper(__u32 csum) {
-    __u32 sum = csum;
-    while (sum >> 16)
-        sum = (sum & 0xffff) + (sum >> 16);
-    return ~sum;
-}
-
-static __always_inline
-__u16 ipv4_csum(__u32 csum, struct iphdr *iph) {
-    csum = bpf_csum_diff(0, 0, (void*)iph, sizeof(*iph), csum);
-    return csum_fold_helper(csum);
-}
-
-static __always_inline
-void update_tcp_checksum(struct tcphdr *tcph, __u32 old_saddr, __u32 new_saddr,
-                                              __u32 old_daddr, __u32 new_daddr) {
-    __u32 check = tcph->check;
-
-    // Вычитаем старые значения псевдозаголовка
-    check = ~check;
-    check = bpf_csum_diff(&old_saddr, 4, &new_saddr, 4, check);
-    check = bpf_csum_diff(&old_daddr, 4, &new_daddr, 4, check);
-
-    // Добавляем новые значения псевдозаголовка
-    check = check;
-
-    tcph->check = csum_fold_helper(check);
-}
+// Заголовки ПО
+#include "flb4_defs.h"
+#include "flb4_chksum.h"
+#include "flb4_maps.h"
 
 __attribute__((__always_inline__))
 static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset) {
@@ -73,6 +28,9 @@ static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end,
 	struct iphdr* ip = data + offset;
 	VALIDATE_HEADER(ip, data_end);
 
+    bpf_printk("ip->daddr: %d", bpf_ntohl(ip->daddr));
+
+    return XDP_PASS;
 
     int action  = XDP_PASS;
     int ifindex = 0;
@@ -106,12 +64,12 @@ static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end,
 
         switch (fib_ret) {
             case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
-                memcpy(eth->h_dest, fib_attrs.dmac, ETH_ALEN);
+                memcpy(eth->h_dest,   fib_attrs.dmac, ETH_ALEN);
                 memcpy(eth->h_source, fib_attrs.smac, ETH_ALEN);
 
                 // Пересчитываем контрольную сумму IP-заголовка
                 ip->check = 0;
-                ip->check = ipv4_csum(0, ip);
+                ip->check = ipv4_chksum(0, ip);
 
                 bpf_printk("protocol: %d", ip->protocol);
 
@@ -119,7 +77,7 @@ static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end,
                     struct tcphdr* tcph = (struct tcphdr* )(ip + 1);
                     VALIDATE_HEADER(tcph, data_end);
 
-                    update_tcp_checksum(tcph, old_saddr, ip->saddr, old_daddr, ip->daddr);
+                    tcp_chksum(tcph, old_saddr, ip->saddr, old_daddr, ip->daddr);
                 }
 
                 action = bpf_redirect(ifindex, 0);
@@ -137,7 +95,7 @@ static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end,
 	return action;
 }
 
-SEC("xdp/flb4")
+SEC("xdp")
 int balancer_main(struct xdp_md* ctx) {
 	void *data     = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;

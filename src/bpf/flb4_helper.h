@@ -10,9 +10,5 @@
 #include <linux/tcp.h>
 #include <sys/cdefs.h>
 
-#define VALIDATE_HEADER(ptr, end)   \
-	if ((void*)(ptr + 1) > end) { \
-		return XDP_PASS;            \
-	}
 
 #endif

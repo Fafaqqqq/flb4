@@ -16,7 +16,7 @@ file(GLOB_RECURSE sources
 add_executable(${target} ${sources})
 
 # Линкуем bpf
-target_link_libraries(${target} bpf)
+target_link_libraries(${target} bpf yaml-cpp::yaml-cpp)
 target_include_directories(${target} PRIVATE -L${CMAKE_SOURCE_DIR}/lib/libbpf/root/usr/include)
 
 # Необходимо, чтобы таргет flb4_bpf отработал раньше, т.к. он генерирует header-файл в user программу
