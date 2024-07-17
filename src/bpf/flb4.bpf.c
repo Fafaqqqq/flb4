@@ -11,8 +11,6 @@
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/tcp.h>
-#include <sys/socket.h>
-#include <sys/cdefs.h>
 
 // Заголовки ПО
 #include "flb4_defs.h"
@@ -20,79 +18,98 @@
 #include "flb4_maps.h"
 
 __attribute__((__always_inline__))
-static inline int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset) {
+static int pass_packet(struct xdp_md* ctx) {
+    void* data     = (void *)(long)ctx->data;
+    void* data_end = (void *)(long)ctx->data_end;
 
-	struct ethhdr* eth = (struct ethhdr*)data;
+
+    struct ethhdr* eth = (struct ethhdr*)data;
 	VALIDATE_HEADER(eth, data_end);
 
-	struct iphdr* ip = data + offset;
+	struct iphdr* ip = (struct iphdr*)(eth + 1);
 	VALIDATE_HEADER(ip, data_end);
 
-    bpf_printk("ip->daddr: %d", bpf_ntohl(ip->daddr));
+    struct bpf_fib_lookup fib_attrs;
+    memset(&fib_attrs, 0, sizeof(fib_attrs));
+
+    fib_attrs.family   = AF_INET;
+    fib_attrs.ipv4_src = ip->saddr;
+    fib_attrs.ipv4_dst = ip->daddr;
+    fib_attrs.ifindex  = *(__u32*)bpf_map_lookup_elem(&redirect_map, &(ctx->ingress_ifindex));
+
+    int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), 0);
+
+    switch (fib_ret) {
+        case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
+            memcpy(eth->h_dest,   fib_attrs.dmac, ETH_ALEN);
+            memcpy(eth->h_source, fib_attrs.smac, ETH_ALEN);
+
+            return bpf_redirect_map(&redirect_map, ctx->ingress_ifindex, 0);
+            break;
+        case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
+            return XDP_DROP;
+            break;
+        case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
+            break;
+        default:
+            return XDP_DROP;
+    }
 
     return XDP_PASS;
+}
 
-    int action  = XDP_PASS;
-    int ifindex = 0;
+/*
+1. Принимаем пакет. Запоминаем адрес и порт клиента
 
-    __u32 old_saddr = ip->saddr;
-    __u32 old_daddr = ip->daddr;
+*/
 
-    if (ip->daddr == bpf_htonl(VIRTUAL_IP_ETH1) && ip->saddr != bpf_htonl(REAL_IP)) {
-		ip->daddr = bpf_htonl(REAL_IP);
-		ip->saddr = bpf_htonl(VIRTUAL_IP_ETH2);
-        ifindex  = 4;
-	}
+static __u32 rs_index     = 1;
+static __u32 subnet_port  = 1025;
 
-	if (ip->daddr == bpf_htonl(VIRTUAL_IP_ETH2) && ip->saddr == bpf_htonl(REAL_IP)) {
-		ip->saddr = bpf_htonl(VIRTUAL_IP_ETH1);
-		ip->daddr = bpf_htonl(SOURCE_IP);
-        ifindex = 3;
-	}
 
-    if (ifindex > 0) {
-        struct bpf_fib_lookup fib_attrs;
+__attribute__((__always_inline__))
+static int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset) {
 
-        memset(&fib_attrs, 0, sizeof(fib_attrs));
+	struct ethhdr* ethh = (struct ethhdr*)data;
+	VALIDATE_HEADER(ethh, data_end);
 
-        fib_attrs.family   = AF_INET;
-        fib_attrs.ipv4_src = ip->saddr;
-        fib_attrs.ipv4_dst = ip->daddr;
-        fib_attrs.ifindex  = ifindex;
+	struct iphdr* iph = data + offset;
+	VALIDATE_HEADER(iph, data_end);
 
-        int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), 0);
+    if (iph->protocol != IPPROTO_TCP)
+        return XDP_PASS;
 
-        switch (fib_ret) {
-            case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
-                memcpy(eth->h_dest,   fib_attrs.dmac, ETH_ALEN);
-                memcpy(eth->h_source, fib_attrs.smac, ETH_ALEN);
+    struct tcphdr* tcph = (struct tcphdr*)(iph + 1);
+	VALIDATE_HEADER(tcph, data_end);
 
-                // Пересчитываем контрольную сумму IP-заголовка
-                ip->check = 0;
-                ip->check = ipv4_chksum(0, ip);
+    struct addres addr = {
+        .addr = bpf_ntohl(iph->saddr),
+        .port = bpf_ntohs(tcph->source)
+    };
 
-                bpf_printk("protocol: %d", ip->protocol);
+    struct session_info* session = (struct session_info*)bpf_map_lookup_elem(&session_map, &addr);
 
-                if (ip->protocol == IPPROTO_TCP) {
-                    struct tcphdr* tcph = (struct tcphdr* )(ip + 1);
-                    VALIDATE_HEADER(tcph, data_end);
+    if (session && session->flags & F_CONNECTED) {
+        iph->saddr = session->subnet.addr;
+        iph->daddr = session->real.addr;
 
-                    tcp_chksum(tcph, old_saddr, ip->saddr, old_daddr, ip->daddr);
-                }
+        tcph->source = session->subnet.port;
+        tcph->dest   = session->real.port;
+    } else {
+        if (tcph->syn && !(tcph->ack)) {
+            struct session_info new_session;
 
-                action = bpf_redirect(ifindex, 0);
-                break;
-            case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
-                action = XDP_DROP;
-                break;
-            case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
-                break;
-            default:
-                action = XDP_DROP;
+            new_session.flags |= F_SYN;
+
+            new_session.vip.addr = bpf_ntohl(iph->daddr);
+            new_session.vip.port = bpf_ntohs(tcph->dest);
+
+            new_session.subnet.addr =
         }
     }
 
-	return action;
+
+	return pass_packet(ctx);
 }
 
 SEC("xdp")

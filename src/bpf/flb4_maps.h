@@ -16,21 +16,30 @@
 //   __uint(map_flags, NO_FLAGS);
 // } vs_map SEC(".maps");
 
-// struct {
-//   __uint(type, BPF_MAP_TYPE_ARRAY);
-//   __type(key, __u32);
-//   __type(value, __u32);
-//   __uint(max_entries, 16);
-//   __uint(map_flags, NO_FLAGS);
-// } real_servers_map SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);
+  __type(value, __u8);
+  __uint(max_entries, MAX_RS);
+  __uint(map_flags, NO_FLAGS);
+} real_servers_map SEC(".maps");
 
 struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(type, BPF_MAP_TYPE_DEVMAP);
   __type(key, __u32);
   __type(value, __u32);
-  __uint(max_entries, MAX_VS);
+  __uint(max_entries, MAX_RS);
   __uint(map_flags, NO_FLAGS);
-} example_map SEC(".maps");
+} redirect_map SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, struct addres_info);
+  __type(value, struct session_info);
+  __uint(max_entries, MAX_RS);
+  __uint(map_flags, NO_FLAGS);
+} session_map SEC(".maps");
+
 
 
 #endif
