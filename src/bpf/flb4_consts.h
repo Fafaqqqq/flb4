@@ -14,4 +14,6 @@
 
 #define F_CONNECTED (F_SYN | F_SYN_ACK | F_ACK)
 
+#define SUBNET_DEFAULT_PORT (1025)
+
 #endif

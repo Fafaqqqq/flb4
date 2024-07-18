@@ -19,7 +19,7 @@
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
-  __type(value, __u8);
+  __type(value, __u32);
   __uint(max_entries, MAX_RS);
   __uint(map_flags, NO_FLAGS);
 } real_servers_map SEC(".maps");
