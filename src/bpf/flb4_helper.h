@@ -8,28 +8,75 @@
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/tcp.h>
-#include <sys/cdefs.h>
+// #include <sys/cdefs.h>
 
 #include "flb4_consts.h"
+#include "flb4_maps.h"
+
+static __u32 sub_idx = 1;
+static __u32 sub_port = 1;
 
 static __always_inline
-void incr_dst(__u32* idx, __u32* port, void* rs_map) {
-    __u32 rs_count_idx = 0;
-    __u32 rs_count     = *(__u32*)bpf_map_lookup_elem(&rs_map, &idx);
+int get_next_subnet(struct addres* subnet) {
+    if (NULL == subnet)
+        return -__LINE__;
 
-    (*idx)++;
-     *idx = *idx % rs_count;
+    __u32  sub_count_idx = 0;
+    __u32* sub_count     = (__u32*)bpf_map_lookup_elem(&subnet_map, &sub_count_idx);
 
-    if (0 == idx) {
-        *idx = 1;
+    if (NULL == sub_count)
+        return -__LINE__;
 
-        (*port)++;
-        *port = *port % 0xFFFF;
+    sub_idx++;
+    sub_idx = sub_idx % *sub_count;
 
-        if (*port == 0) {
-            *port = SUBNET_DEFAULT_PORT;
+    if (0 == sub_idx) {
+        sub_idx = 1;
+
+        sub_port++;
+        sub_port = sub_port % 0xFFFF;
+
+        if (sub_port == 0) {
+            sub_port = SUBNET_DEFAULT_PORT;
         }
     }
+
+    __u32* sub_addr = (__u32*)bpf_map_lookup_elem(&subnet_map, &sub_idx);
+
+    if (NULL == sub_addr)
+        return -__LINE__;
+
+    subnet->addr = *sub_addr;
+    subnet->port =  sub_port;
+
+    return 0;
+}
+
+static __u32 rs_idx = 1;
+
+static __always_inline
+int get_next_rs(struct addres* rs) {
+    if (NULL == rs)
+        return -__LINE__;
+
+    __u32  rs_count_idx = 0;
+    __u32* rs_count     = (__u32*)bpf_map_lookup_elem(&rs_map, &rs_count_idx);
+
+    if (!rs_count)
+        return -__LINE__;
+
+    rs_idx++;
+    rs_idx = rs_idx % *rs_count;
+
+    if (0 == rs_idx) {
+        rs_idx = 1;
+    }
+    __u32* rs_addr  = (__u32*)bpf_map_lookup_elem(&rs_map, &rs_idx);
+
+    if (NULL == rs_addr)
+        return -__LINE__;
+
+    return 0;
 }
 
 #endif

@@ -23,8 +23,8 @@ endif()
 # Целевая компиляция
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/flb4.bpf.o
-    COMMAND ${CLANG} -O2 -target bpf -I ${LIBBPF_INC_DIR} -I${CMAKE_CURRENT_SOURCE_DIR} -g -c "${SOURCE_FILE}" -o ${RUN_DIR}/flb4.bpf.o
-    COMMAND bpftool gen skeleton ${RUN_DIR}/flb4.bpf.o > ${CMAKE_SOURCE_DIR}/src/Flb4.h
+    COMMAND ${CLANG} -O2 -target bpf -I ${LIBBPF_INC_DIR} -I${CMAKE_CURRENT_SOURCE_DIR} -g -c "${SOURCE_FILE}" -o ${CMAKE_BINARY_DIR}/flb4.bpf.o
+    COMMAND bpftool gen skeleton ${CMAKE_BINARY_DIR}/flb4.bpf.o > ${CMAKE_SOURCE_DIR}/src/Flb4.h
     DEPENDS ${SOURCE_FILE}
 )
 

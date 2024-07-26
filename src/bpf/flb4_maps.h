@@ -7,14 +7,13 @@
 #include "flb4_consts.h"
 #include "flb4_structs.h"
 
-// map, which contains all the vips for which we are doing load balancing
-// struct {
-//   __uint(type, BPF_MAP_TYPE_HASH);
-//   __type(key, __u32);
-//   __type(value, struct vs_info);
-//   __uint(max_entries, MAX_VS);
-//   __uint(map_flags, NO_FLAGS);
-// } vs_map SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(max_entries, MAX_RS);
+  __uint(map_flags, NO_FLAGS);
+} rs_map SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -22,7 +21,15 @@ struct {
   __type(value, __u32);
   __uint(max_entries, MAX_RS);
   __uint(map_flags, NO_FLAGS);
-} real_servers_map SEC(".maps");
+} subnet_map SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, struct addres);
+  __type(value, struct reverse_description);
+  __uint(max_entries, MAX_RS);
+  __uint(map_flags, NO_FLAGS);
+} revers_map SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_DEVMAP);
@@ -34,8 +41,8 @@ struct {
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, struct addres_info);
-  __type(value, struct session_info);
+  __type(key, struct addres);
+  __type(value, struct session_description);
   __uint(max_entries, MAX_RS);
   __uint(map_flags, NO_FLAGS);
 } session_map SEC(".maps");

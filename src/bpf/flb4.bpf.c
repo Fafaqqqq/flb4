@@ -18,11 +18,11 @@
 #include "flb4_maps.h"
 #include "flb4_helper.h"
 
-static __u32 rs_index     = 1;
-static __u32 subnet_port  = SUBNET_DEFAULT_PORT;
-
 static __always_inline
 int pass_packet(struct xdp_md* ctx) {
+    if (!ctx)
+        return XDP_DROP;
+
     void* data     = (void *)(long)ctx->data;
     void* data_end = (void *)(long)ctx->data_end;
 
@@ -38,7 +38,6 @@ int pass_packet(struct xdp_md* ctx) {
     fib_attrs.family   = AF_INET;
     fib_attrs.ipv4_src = ip->saddr;
     fib_attrs.ipv4_dst = ip->daddr;
-    fib_attrs.ifindex  = *(__u32*)bpf_map_lookup_elem(&redirect_map, &(ctx->ingress_ifindex));
 
     int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), 0);
 
@@ -63,7 +62,7 @@ int pass_packet(struct xdp_md* ctx) {
 
 
 static __always_inline
-int build_packet(struct iphdr* iph, struct tcphdr* tcph, struct session_info* session) {
+int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_description* session) {
 
     iph->saddr = bpf_htonl(session->subnet.addr);
     iph->daddr = bpf_htonl(session->real.addr);
@@ -90,9 +89,142 @@ int build_packet(struct iphdr* iph, struct tcphdr* tcph, struct session_info* se
         .dport = session->real.port
     };
 
-    tcph->check = tcp_csum(tcph->check, &old_meta, &new_meta);
+    tcph->check = tcp_chksum(tcph->check, &old_meta, &new_meta);
 
     return 0;
+}
+
+static __always_inline
+int build_revers(struct iphdr* iph, struct tcphdr* tcph, struct reverse_description* session) {
+
+    iph->saddr = bpf_htonl(session->vip.addr);
+    iph->daddr = bpf_htonl(session->client.addr);
+
+    tcph->source = bpf_htons(session->vip.port);
+    tcph->dest   = bpf_htons(session->client.port);
+
+    iph->check = 0;
+    iph->check = ipv4_chksum(0, iph);
+
+    struct chksum_meta old_meta = {
+        .saddr = iph->saddr,
+        .daddr = iph->daddr,
+
+        .sport = tcph->source,
+        .dport = tcph->dest
+    };
+
+    struct chksum_meta new_meta = {
+        .saddr = session->vip.addr,
+        .daddr = session->client.addr,
+
+        .sport = session->vip.port,
+        .dport = session->client.port
+    };
+
+    tcph->check = tcp_chksum(tcph->check, &old_meta, &new_meta);
+
+    return 0;
+}
+
+static __always_inline
+enum packet_flow detect_flow(struct iphdr* iph) {
+    __u32 saddr = bpf_htonl(iph->saddr);
+
+    __u32* real_addr = bpf_map_lookup_elem(&rs_map, &saddr);
+
+    return NULL != real_addr ? straight : revers;
+}
+
+static __always_inline
+int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
+    if (!iph || !tcph)
+        return XDP_DROP;
+
+    struct addres client = {
+        .addr = bpf_ntohl(iph->saddr),
+        .port = bpf_ntohs(tcph->source)
+    };
+
+    struct session_description  description = {};
+    struct session_description* lookup_result = bpf_map_lookup_elem(&session_map, &client);
+
+    if (lookup_result) {
+        memcpy(&description, lookup_result, sizeof(description));
+    }
+
+    switch (description.flags & F_CONNECTED) {
+        case F_NCONNECTED: {
+            if (!(tcph->syn) && tcph->ack) {
+                return XDP_DROP;
+            }
+
+            struct addres rs = { .port = tcph->dest };
+
+            // Round-robbin select
+            if (0 != get_next_rs(&rs))
+                return XDP_DROP;
+
+            // Round-robbin select
+            struct addres subnet;
+            if (0 != get_next_subnet(&subnet))
+                return XDP_DROP;
+
+            description.flags |= F_SYN;
+            description.real   = rs;
+            description.subnet = subnet;
+
+            struct reverse_description rev = {
+                .client   = client,
+                .vip.addr = bpf_htonl(iph->daddr),
+                .vip.port = bpf_htons(tcph->dest)
+            };
+
+            if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
+                return XDP_DROP;
+            }
+
+            break;
+        }
+
+        case F_SYN | F_SYN_ACK: {
+            if (!(tcph->ack))
+                return XDP_DROP;
+
+            description.flags |= F_ACK;
+        }
+
+        case F_SYN:
+        case F_ACK:
+        case F_CONNECTED: {
+            if (tcph->syn || tcph->ack)
+                return XDP_DROP;
+        }
+
+        default:
+            return XDP_DROP;
+    }
+
+    if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+        return XDP_DROP;
+    }
+
+    return build_straight(iph, tcph, &description);
+}
+
+static __always_inline
+int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
+    struct addres subnet = {
+        .addr = bpf_ntohl(iph->daddr),
+        .port = bpf_ntohs(tcph->dest)
+    };
+
+    struct reverse_description* rev = (struct reverse_description*)bpf_map_lookup_elem(&revers_map, &subnet);
+
+    if (NULL == rev)
+        return XDP_DROP;
+
+    return build_revers(iph, tcph, rev);
 }
 
 static __always_inline
@@ -110,47 +242,18 @@ int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset)
     struct tcphdr* tcph = (struct tcphdr*)(iph + 1);
 	VALIDATE_HEADER(tcph, data_end);
 
-    struct addres addr = {
-        .addr = bpf_ntohl(iph->saddr),
-        .port = bpf_ntohs(tcph->source)
-    };
+    enum packet_flow flow = detect_flow(iph);
 
-    struct session_info* session = (struct session_info*)bpf_map_lookup_elem(&session_map, &addr);
+    int action = XDP_DROP;
 
-    if (!session) {
-        if (tcph->syn && !(tcph->ack)) {
-            incr_dst(&rs_index, &subnet_port, &real_servers_map);
-
-            struct session_info new_session = {
-                .flags = F_SYN,
-
-                .vip.addr = bpf_ntohl(iph->daddr),
-                .vip.port = bpf_ntohs(tcph->dest),
-
-                .real.addr = *(__u32*)bpf_map_lookup_elem(&real_servers_map, &rs_index),
-                .real.port = tcph->dest,
-
-                .subnet.addr = 0,
-                .subnet.port = subnet_port
-            };
-
-            if (0 != bpf_map_update_elem(&session_map, &addr, &new_session, BPF_NOEXIST)) {
-
-            }
-        }
-    } else {
-        if (tcph->ack && !(tcph->syn)) {
-            session->flags |= F_ACK;
-        }
-
-        if (session->flags & F_CONNECTED) {
-            iph->saddr = bpf_htonl(session->subnet.addr);
-            iph->daddr = bpf_htonl(session->real.addr);
-
-            tcph->source = bpf_htons(session->subnet.port);
-            tcph->dest   = bpf_htons(session->real.port);
-        }
+    if (revers == flow) {
+        action = process_client_packet(iph, tcph);
+    } else if (straight == flow) {
+        action = process_server_packet(iph, tcph);
     }
+
+    if (XDP_REDIRECT != action)
+        return action;
 
 	return pass_packet(ctx);
 }
@@ -170,4 +273,4 @@ int balancer_main(struct xdp_md* ctx) {
 	return XDP_PASS;
 }
 
-char __license[] __attribute__((section("license"), used)) = "GPL";
+char __license[] SEC("license") = "GPL";

@@ -5,22 +5,26 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-struct vs_info {
-    __u8 change_src_ip : 1;
-};
-
 struct addres {
     __u32 addr;
     __u16 port;
 };
 
-struct session_info {
-    struct addres vip;
+struct session_description {
     struct addres subnet;
     struct addres real;
 
     __u8 flags;
 };
 
+struct reverse_description {
+    struct addres client;
+    struct addres vip;
+};
+
+enum packet_flow {
+    revers = 1,
+    straight
+};
 
 #endif
