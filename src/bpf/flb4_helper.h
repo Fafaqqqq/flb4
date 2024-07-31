@@ -14,7 +14,7 @@
 #include "flb4_maps.h"
 
 static __u32 sub_idx = 1;
-static __u32 sub_port = 1;
+static __u32 sub_port = 1025;
 
 static __always_inline
 int get_next_subnet(struct addres* subnet) {
@@ -22,7 +22,7 @@ int get_next_subnet(struct addres* subnet) {
         return -__LINE__;
 
     __u32  sub_count_idx = 0;
-    __u32* sub_count     = (__u32*)bpf_map_lookup_elem(&subnet_map, &sub_count_idx);
+    __u32* sub_count     = (__u32*)bpf_map_lookup_elem(&subnet_map_array, &sub_count_idx);
 
     if (NULL == sub_count)
         return -__LINE__;
@@ -41,7 +41,7 @@ int get_next_subnet(struct addres* subnet) {
         }
     }
 
-    __u32* sub_addr = (__u32*)bpf_map_lookup_elem(&subnet_map, &sub_idx);
+    __u32* sub_addr = (__u32*)bpf_map_lookup_elem(&subnet_map_array, &sub_idx);
 
     if (NULL == sub_addr)
         return -__LINE__;
@@ -60,7 +60,7 @@ int get_next_rs(struct addres* rs) {
         return -__LINE__;
 
     __u32  rs_count_idx = 0;
-    __u32* rs_count     = (__u32*)bpf_map_lookup_elem(&rs_map, &rs_count_idx);
+    __u32* rs_count     = (__u32*)bpf_map_lookup_elem(&rs_map_array, &rs_count_idx);
 
     if (!rs_count)
         return -__LINE__;
@@ -71,10 +71,12 @@ int get_next_rs(struct addres* rs) {
     if (0 == rs_idx) {
         rs_idx = 1;
     }
-    __u32* rs_addr  = (__u32*)bpf_map_lookup_elem(&rs_map, &rs_idx);
+    __u32* rs_addr  = (__u32*)bpf_map_lookup_elem(&rs_map_array, &rs_idx);
 
     if (NULL == rs_addr)
         return -__LINE__;
+
+    rs->addr = *rs_addr;
 
     return 0;
 }

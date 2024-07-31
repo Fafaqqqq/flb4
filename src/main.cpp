@@ -40,10 +40,13 @@ int main(int argc, char** argv) {
 
     auto flb4_config = config["flb4_tcp"];
 
-    auto     rs_addr_str = flb4_config["rs"]["addr"].as<std::string>();
-    uint32_t rs_addr = inet_addr(rs_addr_str.c_str());
+    auto      rs_addr_str = flb4_config["rs"]["addr"].as<std::string>();
+    auto     sub_addr_str = flb4_config["if_group"][1]["ip"].as<std::string>();
+    uint32_t  rs_addr = inet_addr(rs_addr_str.c_str());
+    uint32_t sub_addr = inet_addr(sub_addr_str.c_str());
+
     uint32_t rs_stat = 1;
-    uint32_t flags = 0;
+    uint32_t flags   = 0;
 
     auto bpf_obj = flb4_bpf::open_and_load();
 
@@ -63,7 +66,24 @@ int main(int argc, char** argv) {
         }
 
         auto rs_map = bpf_object__find_map_by_name(bpf_obj->obj, "rs_map");
+        auto sub_map =  bpf_object__find_map_by_name(bpf_obj->obj, "subnet_map");
         bpf_map_update_elem(bpf_map__fd(rs_map), &rs_addr, &rs_stat, BPF_NOEXIST);
+        bpf_map_update_elem(bpf_map__fd(sub_map), &sub_addr, &rs_stat, BPF_NOEXIST);
+
+        auto  rs_map_array =  bpf_object__find_map_by_name(bpf_obj->obj, "rs_map_array");
+        auto sub_map_array =  bpf_object__find_map_by_name(bpf_obj->obj, "subnet_map_array");
+
+        uint32_t idx = 0;
+        uint32_t val = 1;
+        bpf_map_update_elem(bpf_map__fd(rs_map_array), &idx, &val, BPF_ANY);
+        idx++;
+        bpf_map_update_elem(bpf_map__fd(rs_map_array), &idx, &rs_addr, BPF_ANY);
+
+        idx = 0;
+        val = 1;
+        bpf_map_update_elem(bpf_map__fd(sub_map_array), &idx, &val, BPF_ANY);
+        idx++;
+        bpf_map_update_elem(bpf_map__fd(sub_map_array), &idx, &sub_addr, BPF_ANY);
     }
 
     if (strcmp(argv[1], "dettach") == 0) {
@@ -74,12 +94,6 @@ int main(int argc, char** argv) {
         }
     }
 
-//     struct bpf_map *shared_map_ptr;
-//     shared_map_ptr = bpf_object__find_map_by_name(bpf_obj->obj, "example_map");
-
-//     int key = 0;
-//     int value = 32;
-//     bpf_map_update_elem(bpf_map__fd(shared_map_ptr), &key, &value, 0);
-// cleanup:
-//     flb4_bpf::destroy(bpf_obj);
- }
+cleanup:
+    flb4_bpf::destroy(bpf_obj);
+}

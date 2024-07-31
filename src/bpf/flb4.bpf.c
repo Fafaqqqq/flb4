@@ -13,10 +13,21 @@
 #include <linux/tcp.h>
 
 // Заголовки ПО
+#include "flb4_consts.h"
 #include "flb4_defs.h"
 #include "flb4_chksum.h"
 #include "flb4_maps.h"
 #include "flb4_helper.h"
+#include "flb4_structs.h"
+
+static __always_inline void print_ip(const char* msg, __u32 ip) {
+    bpf_printk("%s %d.%d.%d.%d", msg ? msg : "",
+                                (ip & 0xFF000000) >> 24,
+                                (ip & 0x00FF0000) >> 16,
+                                (ip & 0x0000FF00) >> 8,
+                                (ip & 0x000000FF));
+}
+
 
 static __always_inline
 int pass_packet(struct xdp_md* ctx) {
@@ -81,6 +92,17 @@ int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_descri
         .dport = tcph->dest
     };
 
+    iph->saddr = session->subnet.addr;
+    iph->daddr = session->real.addr;
+
+    tcph->source = bpf_ntohs(session->subnet.port);
+    tcph->dest   = session->real.port;
+
+
+    iph->check = 0;
+    iph->check = ipv4_chksum(0, iph);
+
+
     struct chksum_meta new_meta = {
         .saddr = session->subnet.addr,
         .daddr = session->real.addr,
@@ -124,7 +146,7 @@ int build_revers(struct iphdr* iph, struct tcphdr* tcph, struct reverse_descript
 
     tcph->check = tcp_chksum(tcph->check, &old_meta, &new_meta);
 
-    return 0;
+    return XDP_REDIRECT;
 }
 
 static __always_inline
@@ -141,13 +163,19 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
     if (!iph || !tcph)
         return XDP_DROP;
 
-    struct addres client = {
-        .addr = bpf_ntohl(iph->saddr),
-        .port = bpf_ntohs(tcph->source)
-    };
+    struct addres client = {};
+    client.addr = bpf_ntohl(iph->saddr);
+    client.port = bpf_ntohs(tcph->source);
 
     struct session_description  description = {};
-    struct session_description* lookup_result = bpf_map_lookup_elem(&session_map, &client);
+    description.flags = 0;
+    description.real.addr = 0;
+    description.real.port = 0;
+    description.subnet.addr = 0;
+    description.subnet.port = 0;
+
+    struct session_description* lookup_result;
+    lookup_result = bpf_map_lookup_elem(&session_map, &client);
 
     if (lookup_result) {
         memcpy(&description, lookup_result, sizeof(description));
@@ -166,19 +194,21 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
                 return XDP_DROP;
 
             // Round-robbin select
-            struct addres subnet;
+            struct addres subnet = {};
             if (0 != get_next_subnet(&subnet))
                 return XDP_DROP;
 
             description.flags |= F_SYN;
             description.real   = rs;
-            description.subnet = subnet;
+            description.subnet.addr = subnet.addr;
+            description.subnet.port = subnet.port;
 
-            struct reverse_description rev = {
-                .client   = client,
-                .vip.addr = bpf_htonl(iph->daddr),
-                .vip.port = bpf_htons(tcph->dest)
-            };
+
+            struct reverse_description rev = {};
+            rev.client.addr   = client.addr;
+            rev.client.port   = client.port;
+            rev.vip.addr = bpf_htonl(iph->daddr);
+            rev.vip.port = bpf_htons(tcph->dest);
 
             if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
                 return XDP_DROP;
@@ -214,15 +244,37 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
 
 static __always_inline
 int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
-    struct addres subnet = {
-        .addr = bpf_ntohl(iph->daddr),
-        .port = bpf_ntohs(tcph->dest)
-    };
+    if (!iph || !tcph)
+        return -__LINE__;
 
-    struct reverse_description* rev = (struct reverse_description*)bpf_map_lookup_elem(&revers_map, &subnet);
+    __u32 addr = bpf_ntohl(iph->daddr);
+    __u32 port = bpf_ntohl(tcph->dest);
+
+    struct addres subnet = {};
+    subnet.addr = addr;
+    subnet.port = port;
+
+    struct reverse_description* rev;
+    rev = bpf_map_lookup_elem(&revers_map, &subnet);
 
     if (NULL == rev)
         return XDP_DROP;
+
+    struct addres client = {};
+    client.addr = rev->client.addr;
+    client.port = rev->client.port;
+
+    struct session_description* session;
+    session = bpf_map_lookup_elem(&session_map, &client);
+
+    if (NULL == session)
+        return XDP_DROP;
+
+    session->flags |= F_ACK;
+
+    if (0 != bpf_map_update_elem(&session_map, &client, session, BPF_EXIST)) {
+        return XDP_DROP;
+    }
 
     return build_revers(iph, tcph, rev);
 }
@@ -246,9 +298,9 @@ int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset)
 
     int action = XDP_DROP;
 
-    if (revers == flow) {
-        action = process_client_packet(iph, tcph);
-    } else if (straight == flow) {
+    if (straight == flow) {
+        action = process_client_packet(iph, tcph, data_end);
+    } else if (revers == flow) {
         action = process_server_packet(iph, tcph);
     }
 

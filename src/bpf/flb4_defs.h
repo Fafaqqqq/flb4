@@ -14,10 +14,6 @@
     #define memset __builtin_memset
 #endif
 
-#ifndef LOG
-	#define LOG bpf_printk
-#endif
-
 #define SOURCE_IP       (0x0A8CE2F4)
 #define VIRTUAL_IP_ETH1 (0x0A8C00C9)
 #define VIRTUAL_IP_ETH2 (0x0A9600C8)

@@ -12,23 +12,34 @@ struct {
   __type(key, __u32);
   __type(value, __u32);
   __uint(max_entries, MAX_RS);
-  __uint(map_flags, NO_FLAGS);
 } rs_map SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(max_entries, MAX_RS);
+} rs_map_array SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, __u32);
   __type(value, __u32);
   __uint(max_entries, MAX_RS);
-  __uint(map_flags, NO_FLAGS);
 } subnet_map SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __type(key, __u32);
+  __type(value, __u32);
+  __uint(max_entries, MAX_RS);
+} subnet_map_array SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, struct addres);
   __type(value, struct reverse_description);
   __uint(max_entries, MAX_RS);
-  __uint(map_flags, NO_FLAGS);
 } revers_map SEC(".maps");
 
 struct {
@@ -36,7 +47,6 @@ struct {
   __type(key, __u32);
   __type(value, __u32);
   __uint(max_entries, MAX_RS);
-  __uint(map_flags, NO_FLAGS);
 } redirect_map SEC(".maps");
 
 struct {
@@ -44,7 +54,6 @@ struct {
   __type(key, struct addres);
   __type(value, struct session_description);
   __uint(max_entries, MAX_RS);
-  __uint(map_flags, NO_FLAGS);
 } session_map SEC(".maps");
 
 
