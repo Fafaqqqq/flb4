@@ -15,9 +15,9 @@ file(GLOB_RECURSE sources
 # Создаём исполняемы таргет
 add_executable(${target} ${sources})
 
-# Линкуем bpf
-target_link_libraries(${target} bpf yaml-cpp::yaml-cpp)
-target_include_directories(${target} PRIVATE -L${CMAKE_SOURCE_DIR}/lib/libbpf/root/usr/include)
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+
+target_link_libraries(${target} PUBLIC ${CMAKE_SOURCE_DIR}/submodules/libbpf/src/root/usr/lib64/libbpf.a elf z /usr/local/lib/libzstd.a yaml-cpp::yaml-cpp)
 
 # Необходимо, чтобы таргет flb4_bpf отработал раньше, т.к. он генерирует header-файл в user программу
 add_dependencies(${target} flb4_bpf)
