@@ -2,6 +2,7 @@
 #include "yaml-cpp/node/node.h"
 
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -27,8 +28,185 @@
 #define ERR std::cerr << "[ERR]: "
 #define END std::endl
 
-int main(int argc, char** argv) {
+namespace Lsb::Fast {
 
+class BpfAdapter {
+public:
+    using RawBpf = flb4_bpf;
+
+    enum Flags {
+        ITEM_ANY     = BPF_ANY,   /* create new element or update existing */
+        ITEM_NOEXIST = BPF_NOEXIST, /* create new element if it didn't exist */
+        ITEM_EXIST   = BPF_EXIST, /* update existing element */
+        ITEM_LOCK    = BPF_F_LOCK, /* spin_lock-ed map_lookup/map_update */
+    };
+
+    template<typename Key, typename Value>
+    class Map {
+    public:
+
+    private:
+        bpf_map*    map_;
+        int         map_fd_;
+        std::string name_;
+    public:
+        Map(RawBpf* info, const std::string& name)
+        : map_fd_(0), name_(name) {
+            map_     = bpf_object__find_map_by_name(info->obj, name.c_str());
+            map_fd_  = bpf_map__fd(map_);
+        }
+
+        void init(RawBpf* info, const std::string& name) {
+            map_    = bpf_object__find_map_by_name(info->obj, name.c_str());
+            map_fd_ = bpf_map__fd(map_);
+            name_   = name;
+        }
+
+        Value get(const Key& key) {
+            Value val;
+            if (0 != bpf_map_lookup_elem(map_fd_, &key, &val)) {
+                throw std::runtime_error("map item not found");
+            }
+
+            return val;
+        }
+        void push(const Key& key, const Value& val, Flags flags) {
+            if (0 != bpf_map_update_elem(map_fd_, &key, &val, flags)) {
+                throw std::runtime_error("map item not found");
+            }
+        }
+    };
+
+private:
+    RawBpf* bpf_ = nullptr;
+    int     bpf_fd_   = 0;
+
+public:
+    BpfAdapter() {
+        bpf_ = RawBpf::open_and_load();
+        bpf_fd_ = bpf_program__fd(bpf_->progs.balancer_main);
+    }
+
+    ~BpfAdapter() {
+        RawBpf::destroy(bpf_);
+    }
+
+    int attachTo(int ifindex, int flags) {
+        dettachFrom(ifindex);
+        return bpf_xdp_attach(ifindex, bpf_fd_, flags, nullptr);
+        return 0;
+    };
+
+    int dettachFrom(int ifindex) {
+        return bpf_xdp_attach(ifindex, -1, 0, nullptr);
+        return 0;
+    }
+
+    RawBpf* getBpf() {
+        return bpf_;
+    }
+
+}; // class BpfAdapter
+
+class BpfLoader {
+private:
+    BpfAdapter adapter_;
+    BpfAdapter::Map<uint32_t, uint32_t> rs_map_hash_;
+    BpfAdapter::Map<uint32_t, uint32_t> rs_map_array_;
+    BpfAdapter::Map<uint32_t, uint32_t> subnet_map_hash_;
+    BpfAdapter::Map<uint32_t, uint32_t> subnet_map_array_;
+
+public:
+    BpfLoader()
+    : rs_map_hash_(adapter_.getBpf(), "rs_map")
+    , rs_map_array_(adapter_.getBpf(), "rs_map_array")
+    , subnet_map_hash_(adapter_.getBpf(), "subnet_map")
+    , subnet_map_array_(adapter_.getBpf(), "subnet_map_array") {}
+
+    void loadConfig(const YAML::Node& config) {
+        LOG << "LOADING CONFIG..." << END;
+        LOG << "------------------------------" << END;
+        auto nic_group    = config["nic_group"];
+        auto subnet_group = config["subnet_group"];
+        auto rs_groups    = config["real_servers_groups"];
+
+        for (auto node : nic_group) {
+            LOG << "Attaching xdp to " << node["id"].as<std::string>() << "/" << node["ip"].as<std::string>() << END;
+            adapter_.attachTo(node["ifindex"].as<int>(), 0);
+        }
+        LOG << "Attached successfuly" << END;
+        LOG << "------------------------------" << END;
+
+        LOG << "Configuring real server maps" << END;
+        configureRsGroup(rs_groups);
+        LOG << "Configured successfuly" << END;
+        LOG << "------------------------------" << END;
+
+        LOG << "Configuring subnets maps" << END;
+        configureSubnetGroup(subnet_group);
+        LOG << "Configured successfuly" << END;
+        LOG << "------------------------------" << END;
+        LOG << "LOADING DONE" << END;
+    }
+
+    void unloadConfig(const YAML::Node& config) {
+        LOG << "UNLOADING CONFIG..." << END;
+        LOG << "------------------------------" << END;
+        auto nic_group = config["nic_group"];
+
+        for (auto node : nic_group) {
+            LOG << "Dettaching xdp from " << node["id"].as<std::string>() << "/" << node["ip"].as<std::string>() << END;
+            adapter_.dettachFrom(node["ifindex"].as<int>());
+        }
+
+    }
+
+private:
+    void configureRsGroup(const YAML::Node& group) {
+        for (auto group : group) {
+            uint32_t i = 0;
+            if (group["type"].as<std::string>() == "list") {
+                for (auto item : group["list"]) {
+                    uint32_t rs_addr = inet_addr(item["addr"].as<std::string>().c_str());
+                    rs_map_hash_.push(rs_addr, 1, BpfAdapter::ITEM_NOEXIST);
+                    rs_map_array_.push(i + 1, rs_addr, BpfAdapter::ITEM_ANY);
+                    i++;
+                }
+            }
+
+            if (group["type"].as<std::string>() == "increasing_range") {
+                uint32_t from_addr = inet_addr(group["from_addr"].as<std::string>().c_str());
+                uint32_t to_addr   = inet_addr(group["to_addr"].as<std::string>().c_str());
+
+                uint32_t i = 0;
+                for (uint32_t addr = ntohl(from_addr); addr <= ntohl(to_addr); addr++) {
+                    rs_map_hash_.push(htonl(addr), 1, BpfAdapter::ITEM_NOEXIST);
+                    rs_map_array_.push(i + 1, htonl(addr), BpfAdapter::ITEM_ANY);
+                    i++;
+                }
+            }
+
+            rs_map_array_.push(0, i, BpfAdapter::ITEM_ANY);
+
+        }
+    }
+
+    void configureSubnetGroup(const YAML::Node& group) {
+        uint32_t i = 0;
+        for (auto item : group) {
+            uint32_t subnet_addr = inet_addr(item["addr"].as<std::string>().c_str());
+            subnet_map_hash_.push(subnet_addr, 1, BpfAdapter::ITEM_NOEXIST);
+            subnet_map_array_.push(i + 1, subnet_addr, BpfAdapter::ITEM_ANY);
+            i++;
+        }
+        subnet_map_array_.push(0, i, BpfAdapter::ITEM_ANY);
+
+    }
+};  // class BpfLoader
+
+} // namespace Lsb::Fast
+
+YAML::Node loadYaml(const char* yaml_file) {
     YAML::Node config = YAML::LoadFile("flb4_config.yaml");
 
     if (!config["l4_tcp"]) {
@@ -38,77 +216,28 @@ int main(int argc, char** argv) {
     }
 
     LOG << "Successfuly load config" << END;
-    LOG << "Startig FLB4..." << END;
+    LOG << "Startig LSB(Fast)..." << END;
 
     auto lsb_config = config["l4_tcp"]["fast"];
 
-    auto     sub_addr_str = lsb_config["if_group"][1]["ip"].as<std::string>();
-    uint32_t sub_addr = inet_addr(sub_addr_str.c_str());
+    return std::move(lsb_config);
+}
 
-    uint32_t rs_stat = 1;
-    uint32_t flags   = 0;
-    auto bpf_obj = flb4_bpf::open_and_load();
+int main(int argc, char** argv) {
 
-    if (!bpf_obj) {
-        ERR << "Failed open/load bpf prog!" << END;
-        return -1;
-    }
+    if (argc == 3) {
+        if (strcmp(argv[1], "load") == 0) {
 
-    LOG << "Successfuly load bpf prog." << END;
-
-    if (strcmp(argv[1], "attach") == 0) {
-        for (uint32_t i = 0; i < lsb_config["if_group"].size(); i++) {
-            int ifindex = lsb_config["if_group"][i]["index"].as<int>();
-
-            bpf_xdp_attach(ifindex, -1, flags, nullptr);
-            bpf_xdp_attach(ifindex, bpf_program__fd(bpf_obj->progs.balancer_main), flags, nullptr);
+            auto config = loadYaml(argv[2]);
+            Lsb::Fast::BpfLoader loader;
+            loader.loadConfig(config);
         }
 
-        auto rs_map = bpf_object__find_map_by_name(bpf_obj->obj, "rs_map");
-        auto rs_map_array =  bpf_object__find_map_by_name(bpf_obj->obj, "rs_map_array");
-
-        auto addrs_start_str = lsb_config["rs"]["start"].as<std::string>();
-        auto addrs_end_str   = lsb_config["rs"]["end"].as<std::string>();
-
-        uint32_t addr_start = inet_addr(addrs_start_str.c_str());
-        uint32_t addr_end = inet_addr(addrs_end_str.c_str());
-
-        LOG << "start addr 0x" << std::hex << addr_start << END;
-        LOG << "start end 0x" << std::hex << addr_end << END;
-
-        uint32_t idx   = 1;
-        uint32_t count = 1;
-        for (uint32_t addr = ntohl(addr_start); addr < ntohl(addr_end); addr++) {
-            auto rs_addr = htonl(addr);
-            LOG << "pushing addr " << std::hex << rs_addr << " to rs_map" << END;
-            bpf_map_update_elem(bpf_map__fd(rs_map), &rs_addr, &rs_stat, BPF_NOEXIST);
-            bpf_map_update_elem(bpf_map__fd(rs_map_array), &idx, &rs_addr, BPF_ANY);
-            idx++;
-            count++;
-        }
-
-        idx = 0;
-        bpf_map_update_elem(bpf_map__fd(rs_map_array), &idx, &count, BPF_ANY);
-
-        auto sub_map =  bpf_object__find_map_by_name(bpf_obj->obj, "subnet_map");
-        bpf_map_update_elem(bpf_map__fd(sub_map), &sub_addr, &rs_stat, BPF_NOEXIST);
-        auto sub_map_array =  bpf_object__find_map_by_name(bpf_obj->obj, "subnet_map_array");
-
-        idx = 0;
-        count = 1;
-        bpf_map_update_elem(bpf_map__fd(sub_map_array), &idx, &count, BPF_ANY);
-        idx++;
-        bpf_map_update_elem(bpf_map__fd(sub_map_array), &idx, &sub_addr, BPF_ANY);
-    }
-
-    if (strcmp(argv[1], "dettach") == 0) {
-        for (uint32_t i = 0; i < lsb_config["if_group"].size(); i++) {
-            int ifindex = lsb_config["if_group"][i]["index"].as<int>();
-
-            bpf_xdp_attach(ifindex, -1, flags, nullptr);
+        if (strcmp(argv[1], "unload") == 0) {
+            auto config = loadYaml(argv[2]);
+            Lsb::Fast::BpfLoader loader;
+            loader.unloadConfig(config);
         }
     }
-
-cleanup:
-    flb4_bpf::destroy(bpf_obj);
+    return 0;
 }
