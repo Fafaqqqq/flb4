@@ -13,7 +13,7 @@
 #include "flb4_consts.h"
 #include "flb4_maps.h"
 
-static __u32 sub_idx = 1;
+static __u32 sub_idx  = 1;
 static __u32 sub_port = 1025;
 
 static __always_inline
@@ -46,9 +46,8 @@ int get_next_subnet(struct addres* subnet) {
     if (NULL == sub_addr)
         return -__LINE__;
 
-    subnet->addr = *sub_addr;
-    subnet->port =  sub_port;
-
+    subnet->addr = *sub_addr;            // Network Byte Order
+    subnet->port =  bpf_ntohs(sub_port); // Network Byte Order
     return 0;
 }
 
@@ -76,7 +75,7 @@ int get_next_rs(struct addres* rs) {
     if (NULL == rs_addr)
         return -__LINE__;
 
-    rs->addr = *rs_addr;
+    rs->addr = *rs_addr; // Network Byte Order
 
     return 0;
 }
