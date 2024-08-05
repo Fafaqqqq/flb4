@@ -56,7 +56,7 @@ int pass_packet(struct xdp_md* ctx) {
     print_ip("fib_attrs.ipv4_src ",bpf_htonl(fib_attrs.ipv4_src));
     print_ip("fib_attrs.ipv4_dst ",bpf_htonl(fib_attrs.ipv4_dst));
 
-    int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), 0);
+    int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), BPF_FIB_LOOKUP_DIRECT);
 
     bpf_printk("bpf_fib_lookup ret %d", fib_ret);
 
@@ -245,7 +245,7 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph, void* data_end
             // if (!(tcph->ack))
                 // return XDP_DROP;
 
-            if (!(tcph->ack)) {
+            if (tcph->ack) {
                 bpf_printk("get tcp.ack");
                 description.flags |= F_ACK;
             }

@@ -21,6 +21,14 @@ int get_next_subnet(struct addres* subnet) {
     if (NULL == subnet)
         return -__LINE__;
 
+    __u32* sub_addr = (__u32*)bpf_map_lookup_elem(&subnet_map_array, &sub_idx);
+
+    if (NULL == sub_addr)
+        return -__LINE__;
+
+    subnet->addr = *sub_addr;            // Network Byte Order
+    subnet->port =  bpf_ntohs(sub_port); // Network Byte Order
+
     __u32  sub_count_idx = 0;
     __u32* sub_count     = (__u32*)bpf_map_lookup_elem(&subnet_map_array, &sub_count_idx);
 
@@ -28,7 +36,7 @@ int get_next_subnet(struct addres* subnet) {
         return -__LINE__;
 
     sub_idx++;
-    sub_idx = sub_idx % *sub_count;
+    sub_idx = sub_idx % (*sub_count + 1);
 
     if (0 == sub_idx) {
         sub_idx = 1;
@@ -41,13 +49,6 @@ int get_next_subnet(struct addres* subnet) {
         }
     }
 
-    __u32* sub_addr = (__u32*)bpf_map_lookup_elem(&subnet_map_array, &sub_idx);
-
-    if (NULL == sub_addr)
-        return -__LINE__;
-
-    subnet->addr = *sub_addr;            // Network Byte Order
-    subnet->port =  bpf_ntohs(sub_port); // Network Byte Order
     return 0;
 }
 
@@ -58,6 +59,14 @@ int get_next_rs(struct addres* rs) {
     if (NULL == rs)
         return -__LINE__;
 
+    bpf_printk("rs_idx %d", rs_idx);
+    __u32* rs_addr  = (__u32*)bpf_map_lookup_elem(&rs_map_array, &rs_idx);
+
+    if (NULL == rs_addr)
+        return -__LINE__;
+
+    rs->addr = *rs_addr; // Network Byte Order
+
     __u32  rs_count_idx = 0;
     __u32* rs_count     = (__u32*)bpf_map_lookup_elem(&rs_map_array, &rs_count_idx);
 
@@ -65,17 +74,13 @@ int get_next_rs(struct addres* rs) {
         return -__LINE__;
 
     rs_idx++;
-    rs_idx = rs_idx % *rs_count;
+    rs_idx = rs_idx % (*rs_count + 1);
+
 
     if (0 == rs_idx) {
         rs_idx = 1;
     }
-    __u32* rs_addr  = (__u32*)bpf_map_lookup_elem(&rs_map_array, &rs_idx);
 
-    if (NULL == rs_addr)
-        return -__LINE__;
-
-    rs->addr = *rs_addr; // Network Byte Order
 
     return 0;
 }
