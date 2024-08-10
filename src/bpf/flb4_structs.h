@@ -5,26 +5,40 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-struct addres {
-    __u32 addr;
-    __u16 port;
+enum packet_direction {
+    client_server,
+    server_client
 };
 
-struct session_description {
-    struct addres subnet;
-    struct addres real;
+enum tcp_state {
+    tcp_ncon = 0,
+    tcp_con,
+    tcp_opening,
+    tcp_closing,
+};
 
-    __u8 flags;
+struct node {
+    __be32 addr;
+    __be16 port;
 };
 
 struct reverse_description {
-    struct addres client;
-    struct addres vip;
+    struct node client;
+    struct node vip;
 };
 
-enum packet_flow {
-    revers = 1,
-    straight
+struct session_description {
+
+    struct node subnet;
+    struct node real;
+
+    enum tcp_state state;
+    __u8 flags;
 };
+
+
+
+
+
 
 #endif

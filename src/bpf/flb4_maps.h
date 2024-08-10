@@ -37,25 +37,17 @@ struct {
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, struct addres);
+  __type(key, struct node);
   __type(value, struct reverse_description);
-  __uint(max_entries, 10000);
+  __uint(max_entries, 10);
 } revers_map SEC(".maps");
 
 struct {
-  __uint(type, BPF_MAP_TYPE_DEVMAP);
-  __type(key, __u32);
-  __type(value, __u32);
-  __uint(max_entries, MAX_RS);
-} redirect_map SEC(".maps");
-
-struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, struct addres);
+  __type(key, struct node);
   __type(value, struct session_description);
-  __uint(max_entries, 10000);
+  __uint(max_entries, 10);
 } session_map SEC(".maps");
-
 
 
 #endif

@@ -40,12 +40,12 @@ __u16 tcp_chksum(__u16 seed, struct chksum_meta* old_meta,
     __u32 old_ports = bpf_htonl((bpf_ntohs(old_meta->dport) << 16) | bpf_ntohs(old_meta->sport));
     __u32 new_ports = bpf_htonl( bpf_ntohs(new_meta->dport) << 16  | bpf_ntohs(new_meta->sport));
 
-    bpf_printk("old_meta: saddr 0x%08x daddr 0x%08x sport %d dport %d", old_meta->saddr,
+    TRACE("old_meta: saddr 0x%08x daddr 0x%08x sport %d dport %d", old_meta->saddr,
                                                                         old_meta->daddr,
                                                                         old_meta->sport,
                                                                         old_meta->dport);
 
-    bpf_printk("new_meta: saddr 0x%08x daddr 0x%08x sport %d dport %d", new_meta->saddr,
+    TRACE("new_meta: saddr 0x%08x daddr 0x%08x sport %d dport %d", new_meta->saddr,
                                                                         new_meta->daddr,
                                                                         new_meta->sport,
                                                                         new_meta->dport);

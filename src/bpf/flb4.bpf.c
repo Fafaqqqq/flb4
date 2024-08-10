@@ -1,3 +1,5 @@
+// #define DEBUG
+
 #include <linux/types.h>
 
 // Заголовки bpf-функций
@@ -20,8 +22,9 @@
 #include "flb4_helper.h"
 #include "flb4_structs.h"
 
+
 static __always_inline void print_ip(const char* msg, __u32 ip) {
-    bpf_printk("%s %d.%d.%d.%d", msg ? msg : "",
+    TRACE("%s %d.%d.%d.%d", msg ? msg : "",
                                 (ip & 0xFF000000) >> 24,
                                 (ip & 0x00FF0000) >> 16,
                                 (ip & 0x0000FF00) >> 8,
@@ -34,7 +37,7 @@ int pass_packet(struct xdp_md* ctx) {
     if (!ctx)
         return XDP_DROP;
 
-    bpf_printk("passing packet");
+    TRACE("passing packet");
 
     void* data     = (void *)(long)ctx->data;
     void* data_end = (void *)(long)ctx->data_end;
@@ -56,16 +59,20 @@ int pass_packet(struct xdp_md* ctx) {
     print_ip("fib_attrs.ipv4_src ",bpf_htonl(fib_attrs.ipv4_src));
     print_ip("fib_attrs.ipv4_dst ",bpf_htonl(fib_attrs.ipv4_dst));
 
-    int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), BPF_FIB_LOOKUP_DIRECT);
 
-    bpf_printk("bpf_fib_lookup ret %d", fib_ret);
+    __u64 start = bpf_ktime_get_ns();
+    int fib_ret = bpf_fib_lookup(ctx, &fib_attrs, sizeof(fib_attrs), BPF_FIB_LOOKUP_DIRECT);
+    __u64 end = bpf_ktime_get_ns();
+
+    TRACE("bpf_fib_lookup elapsed time %dns", end - start);
+    TRACE("bpf_fib_lookup ret %d", fib_ret);
 
     switch (fib_ret) {
         case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
             memcpy(eth->h_dest,   fib_attrs.dmac, ETH_ALEN);
             memcpy(eth->h_source, fib_attrs.smac, ETH_ALEN);
 
-            bpf_printk("redirecing packet to ifindex %d", fib_attrs.ifindex);
+            TRACE("redirecing packet to ifindex %d", fib_attrs.ifindex);
 
             return bpf_redirect(fib_attrs.ifindex, 0);
             break;
@@ -81,12 +88,10 @@ int pass_packet(struct xdp_md* ctx) {
     return XDP_PASS;
 }
 
-
-
 static __always_inline
-int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_description* session, void* data_end) {
+int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_description* session) {
 
-    print_ip("session->subnet.addr", bpf_htonl(session->subnet.addr));
+    // print_ip("session->subnet.addr", bpf_htonl(session->subnet.addr));
 
     struct chksum_meta old_meta = {
         .saddr = iph->saddr,
@@ -102,8 +107,8 @@ int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_descri
     tcph->source = session->subnet.port;
     tcph->dest   = session->real.port;
 
-    bpf_printk("tcph->source %d ntoh %d", session->subnet.port, bpf_ntohs(session->subnet.port));
-    bpf_printk("tcph->dest %d ntoh %d", session->real.port, bpf_ntohs(session->real.port));
+    TRACE("tcph->source %d ntoh %d", session->subnet.port, bpf_ntohs(session->subnet.port));
+    TRACE("tcph->dest %d ntoh %d", session->real.port, bpf_ntohs(session->real.port));
 
     iph->check = 0;
     iph->check = ipv4_chksum(0, iph);
@@ -115,8 +120,11 @@ int build_straight(struct iphdr* iph, struct tcphdr* tcph, struct session_descri
         .sport = session->subnet.port,
         .dport = session->real.port
     };
-
+    __u64 start = bpf_ktime_get_ns();
     tcph->check = tcp_chksum(tcph->check, &old_meta, &new_meta);
+    __u64 end = bpf_ktime_get_ns();
+
+    TRACE("tcp_chksum elapsed time %dns", end - start);
 
     return XDP_REDIRECT;
 }
@@ -138,8 +146,8 @@ int build_revers(struct iphdr* iph, struct tcphdr* tcph, struct reverse_descript
     tcph->source = session->vip.port;
     tcph->dest   = session->client.port;
 
-    bpf_printk("tcph->source %d tcph->dest %d", tcph->source, tcph->dest);
-    bpf_printk("tcph->source %d tcph->dest %d", bpf_htons(tcph->source), bpf_htons(tcph->dest));
+    TRACE("tcph->source %d tcph->dest %d", tcph->source, tcph->dest);
+    TRACE("tcph->source %d tcph->dest %d", bpf_htons(tcph->source), bpf_htons(tcph->dest));
 
     iph->check = 0;
     iph->check = ipv4_chksum(0, iph);
@@ -159,25 +167,26 @@ int build_revers(struct iphdr* iph, struct tcphdr* tcph, struct reverse_descript
 }
 
 static __always_inline
-enum packet_flow detect_flow(struct iphdr* iph) {
+enum packet_direction parse_direction(struct iphdr* iph) {
     __u32 saddr = iph->saddr;
     __u32* real_addr = bpf_map_lookup_elem(&rs_map, &saddr);
 
-    return NULL == real_addr ? straight : revers;
+    return NULL == real_addr ? client_server : server_client;
 }
 
 static __always_inline
-int process_client_packet(struct iphdr* iph, struct tcphdr* tcph, void* data_end) {
+int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
     if (!iph || !tcph)
         return XDP_DROP;
-    // bpf_printk("process_client_packet tcph->source %d ntoh %d", tcph->source, bpf_ntohs(tcph->source));
-    // bpf_printk("process_client_packet tcph->dest %d ntoh %d", tcph->dest, bpf_htons(tcph->dest));
+    TRACE("process_client_packet tcph->source %d ntoh %d", tcph->source, bpf_ntohs(tcph->source));
+    TRACE("process_client_packet tcph->dest %d ntoh %d", tcph->dest, bpf_htons(tcph->dest));
 
-    struct addres client = {};
+    struct node client = {};
     client.addr = iph->saddr;   // Network Byte Order
     client.port = tcph->source; // Network Byte Order
 
     struct session_description  description = {};
+    description.state      = tcp_ncon;
     description.flags       = 0;
     description.real.addr   = 0;
     description.real.port   = 0;
@@ -188,77 +197,180 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph, void* data_end
     lookup_result = bpf_map_lookup_elem(&session_map, &client);
 
     if (lookup_result) {
-        bpf_printk("found session");
+        TRACE("found session");
         memcpy(&description, lookup_result, sizeof(description));
     } else {
-        bpf_printk("got new session");
+        TRACE("got new session");
     }
 
-    bpf_printk("description.flags & F_CONNECTED = 0x%x", description.flags & F_CONNECTED);
-    switch (description.flags & F_CONNECTED) {
-        case F_NCONNECTED: {
-            // if (!(tcph->syn) && tcph->ack) {
-            //     return XDP_DROP;
-            // }
+    // TRACE("description.flags & F_CONNECTED = 0x%x", description.flags & F_CONNECTED);
+    // switch (description.flags & F_CONNECTED) {
+    //     case F_NCONNECTED: {
+    //         // if (!(tcph->syn) && tcph->ack) {
+    //         //     return XDP_DROP;
+    //         // }
 
-            bpf_printk("get tcp.syn");
+    //         TRACE("get tcp.syn");
 
-            struct addres rs = { .port = tcph->dest }; // Network Byte Order
+    //         struct node rs = { .port = tcph->dest }; // Network Byte Order
 
-            // Round-robbin select
-            if (0 != get_next_rs(&rs)) // Network Byte Order
-                return XDP_DROP;
-            bpf_printk("got new rs");
-            print_ip("rs->addr ", rs.addr);
+    //         // Round-robbin select
+    //         if (0 != get_next_rs(&rs)) // Network Byte Order
+    //             return XDP_DROP;
+    //         TRACE("got new rs");
+    //         print_ip("rs->addr ", rs.addr);
 
-            // Round-robbin select
-            struct addres subnet = {};
-            if (0 != get_next_subnet(&subnet)) // Network Byte Order
-                return XDP_DROP;
+    //         // Round-robbin select
+    //         struct node subnet = {};
+    //         if (0 != get_next_subnet(&subnet)) // Network Byte Order
+    //             return XDP_DROP;
 
-            bpf_printk("got new subnet");
-            print_ip("subnet->addr ", subnet.addr);
+    //         TRACE("got new subnet");
+    //         print_ip("subnet->addr ", subnet.addr);
 
-            description.flags |= F_SYN;
-            description.real   = rs;
-            description.subnet.addr = subnet.addr;
-            description.subnet.port = subnet.port;
+    //         description.flags |= F_SYN;
+    //         description.real   = rs;
+    //         description.subnet.addr = subnet.addr;
+    //         description.subnet.port = subnet.port;
 
-            print_ip("process_client_packet subnet.addr", subnet.addr);
-            bpf_printk("process_client_packet subnet.port %d", subnet.port);
+    //         print_ip("process_client_packet subnet.addr", subnet.addr);
+    //         TRACE("process_client_packet subnet.port %d", subnet.port);
 
-            struct reverse_description rev = {};
-            rev.client.addr   = client.addr;
-            rev.client.port   = client.port;
-            rev.vip.addr = iph->daddr;
-            rev.vip.port = tcph->dest;
+    //         struct reverse_description rev = {};
+    //         rev.client.addr   = client.addr;
+    //         rev.client.port   = client.port;
+    //         rev.vip.addr = iph->daddr;
+    //         rev.vip.port = tcph->dest;
 
-            if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
-                bpf_printk("session exists");
-                return XDP_DROP;
+    //         if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
+    //             TRACE("session exists");
+    //             return XDP_DROP;
+    //         }
+
+    //         if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+    //             TRACE("cant update session_map");
+    //             return XDP_DROP;
+    //         }
+
+    //         break;
+    //     }
+
+    //     case F_SYN | F_SYN_ACK: {
+    //         TRACE("case F_SYN | F_SYN_ACK");
+    //         // if (!(tcph->ack))
+    //             // return XDP_DROP;
+
+    //         if (tcph->ack) {
+    //             TRACE("get tcp.ack");
+    //             description.flags |= F_ACK;
+
+    //             if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+    //                 TRACE("cant update session_map");
+    //                 return XDP_DROP;
+    //             }
+    //         }
+    //         break;
+    //     }
+
+    //     case F_CONNECTED: {
+    //         if (tcph->fin) {
+
+    //         }
+    //         break;
+    //     }
+
+    // }
+
+
+    switch (description.state) {
+        case tcp_ncon: {
+            if (tcph->syn && !(tcph->ack)) {
+                description.state = tcp_opening;
+                description.flags  |= F_SYN;
+
+                TRACE("got tcp.syn");
+                TRACE("move to state -> tcp_opening");
+
+                struct node rs = { .port = tcph->dest }; // Network Byte Order
+
+                // Round-robbin select
+                if (0 != get_next_rs(&rs)) // Network Byte Order
+                    return XDP_DROP;
+                TRACE("got new rs");
+                print_ip("rs->addr ", rs.addr);
+
+                // Round-robbin select
+                struct node subnet = {};
+                if (0 != get_next_subnet(&subnet)) // Network Byte Order
+                    return XDP_DROP;
+
+                TRACE("got new subnet");
+                print_ip("subnet->addr ", subnet.addr);
+
+                description.real = rs;
+                description.subnet.addr = subnet.addr;
+                description.subnet.port = subnet.port;
+
+                // print_ip("process_client_packet subnet.addr", subnet.addr);
+                TRACE("process_client_packet subnet.port %d", subnet.port);
+
+                struct reverse_description rev = {};
+                rev.client.addr = client.addr;
+                rev.client.port = client.port;
+                rev.vip.addr    = iph->daddr;
+                rev.vip.port    = tcph->dest;
+
+                if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
+                    TRACE("session exists");
+                    return XDP_DROP;
+                }
+
+                if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+                    TRACE("cant update session_map");
+                    return XDP_DROP;
+                }
             }
             break;
         }
-
-        case F_SYN | F_SYN_ACK: {
-            bpf_printk("case F_SYN | F_SYN_ACK");
-            // if (!(tcph->ack))
-                // return XDP_DROP;
-
-            if (tcph->ack) {
-                bpf_printk("get tcp.ack");
+        case tcp_con: {
+            TRACE("tcp.fin %d tcp.ack %d", tcph->fin, tcph->ack);
+            if (tcph->fin && description.flags == F_CONNECTED) {
+                TRACE("got tcp.fin");
+                TRACE("move to state -> tcp_closing");
+                description.state = tcp_closing;
+                if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+                    TRACE("cant update session_map");
+                    return XDP_DROP;
+                }
+            } else {
+                TRACE("pass");
+            }
+            break;
+        }
+        case tcp_opening: {
+            if (tcph->ack && !(tcph->syn) && description.flags == (F_SYN | F_SYN_ACK)) {
+                description.state = tcp_con;
                 description.flags |= F_ACK;
+                TRACE("got tcp.ack");
+                TRACE("move to state -> tcp_con");
+                if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
+                    TRACE("cant update session_map");
+                    return XDP_DROP;
+                }
+            }
+        }
+        case tcp_closing:
+            if (tcph->ack && !(tcph->fin)) {
+                // bpf_map_delete_elem(&revers_map, &description.subnet);
+                // bpf_map_delete_elem(&session_map, &client);
+
+                TRACE("got tcp.ack");
+                TRACE("move to state -> tcp_ncon");
             }
             break;
-        }
     }
 
-    if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
-        bpf_printk("cant update session_map");
-        return XDP_DROP;
-    }
-
-    return build_straight(iph, tcph, &description, data_end);
+    return build_straight(iph, tcph, &description);
 }
 
 
@@ -267,27 +379,27 @@ int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
     if (!iph || !tcph)
         return -__LINE__;
 
-    bpf_printk("process_server_packet");
+    TRACE("process_server_packet");
 
     __u32 addr = iph->daddr;
     __u16 port = tcph->dest;
 
-    struct addres subnet = {};
+    struct node subnet = {};
     subnet.addr = addr;
     subnet.port = port;
 
     print_ip("process_server_packet subnet.addr", subnet.addr);
-    bpf_printk("process_server_packet subnet.port %d", subnet.port);
+    TRACE("process_server_packet subnet.port %d", subnet.port);
 
     struct reverse_description* rev;
     rev = bpf_map_lookup_elem(&revers_map, &subnet);
 
     if (NULL == rev) {
-        bpf_printk("reverse_description not found");
+        TRACE("reverse_description not found");
         return XDP_DROP;
     }
 
-    struct addres client = {};
+    struct node client = {};
     client.addr = rev->client.addr;
     client.port = rev->client.port;
 
@@ -295,15 +407,26 @@ int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
     session = bpf_map_lookup_elem(&session_map, &client);
 
     if (NULL == session) {
-        bpf_printk("No session found");
+        TRACE("No session found");
         return XDP_DROP;
     }
 
-    session->flags |= F_SYN_ACK;
+    if (tcph->syn && tcph->ack) {
+        session->flags |= F_SYN_ACK;
 
-    if (0 != bpf_map_update_elem(&session_map, &client, session, BPF_EXIST)) {
-        bpf_printk("Can`t update session_map");
-        return XDP_DROP;
+        if (0 != bpf_map_update_elem(&session_map, &client, session, BPF_EXIST)) {
+            TRACE("Can`t update session_map");
+            return XDP_DROP;
+        }
+    } else if (tcph->fin) {
+        session->state = tcp_closing;
+        if (0 != bpf_map_update_elem(&session_map, &client, session, BPF_EXIST)) {
+            TRACE("Can`t update session_map");
+            return XDP_DROP;
+        }
+    } else if (session->state == tcp_closing && tcph->ack && !(tcph->fin)) {
+        bpf_map_delete_elem(&revers_map, &subnet);
+        bpf_map_delete_elem(&session_map, &client);
     }
 
     return build_revers(iph, tcph, rev);
@@ -311,7 +434,7 @@ int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
 
 static __always_inline
 int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset) {
-    bpf_printk("begin packet proc");
+    TRACE("begin packet proc");
 
 	struct ethhdr* ethh = (struct ethhdr*)data;
 	VALIDATE_HEADER(ethh, data_end);
@@ -322,29 +445,32 @@ int process_packet(struct xdp_md* ctx, void* data, void* data_end, __u64 offset)
     if (iph->protocol != IPPROTO_TCP)
         return XDP_PASS;
 
-
-    bpf_printk("packet proto - tcp");
-
     struct tcphdr* tcph = (struct tcphdr*)(iph + 1);
 	VALIDATE_HEADER(tcph, data_end);
 
-    enum packet_flow flow = detect_flow(iph);
+    enum packet_direction dir = parse_direction(iph);
 
     print_ip("recv pack saddr", bpf_htonl(iph->saddr));
-    bpf_printk("recv pack port %d", bpf_htonl(tcph->source));
-    bpf_printk("recv pack flow %d", (int)flow);
+    TRACE("recv pack port %d", bpf_htonl(tcph->source));
+    TRACE("recv pack flow %d", (int)dir);
 
     int action = XDP_DROP;
 
-    if (straight == flow) {
-        bpf_printk("packet from client");
-        action = process_client_packet(iph, tcph, data_end);
-    } else if (revers == flow) {
-        bpf_printk("packet from server");
-        action = process_server_packet(iph, tcph);
+    switch (dir) {
+        case client_server: {
+            TRACE("packet from client");
+            action = process_client_packet(iph, tcph);
+            break;
+        }
+
+        case server_client: {
+            TRACE("packet from server");
+            action = process_server_packet(iph, tcph);
+            break;
+        }
     }
 
-    bpf_printk("process packet ret %d", action);
+    TRACE("process packet ret %d", action);
 
     if (XDP_REDIRECT != action)
         return action;
@@ -360,13 +486,19 @@ int balancer_main(struct xdp_md* ctx) {
 	struct ethhdr* eth = (struct ethhdr*)data;
 	VALIDATE_HEADER(eth, data_end);
 
-    bpf_printk("recv packet");
+    TRACE("recv packet");
+
+    int action = XDP_PASS;
 
 	if (eth->h_proto == bpf_htons(ETH_P_IP)) {
-        return process_packet(ctx, data, data_end, sizeof(struct ethhdr));
-	}
+        __u64 start = bpf_ktime_get_ns();
+        action = process_packet(ctx, data, data_end, sizeof(struct ethhdr));
+        __u64 end = bpf_ktime_get_ns();
 
-	return XDP_PASS;
+
+        bpf_printk("process_packet elapsed time %dns", end - start);
+	}
+	return action;
 }
 
 char __license[] SEC("license") = "GPL";
