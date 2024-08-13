@@ -3,12 +3,16 @@
 
 #include <linux/types.h>
 
-// Заголовки bpf-функций
-#include <bpf/bpf_helpers.h>
-
 // Заголовки сетевого стека
 #include <linux/ip.h>
 #include <linux/tcp.h>
+
+// Заголовки bpf-функций
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
+
+#include "flb4_defs.h"
 
 struct chksum_meta {
     __u32 saddr;

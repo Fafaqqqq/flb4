@@ -203,87 +203,9 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
         TRACE("got new session");
     }
 
-    // TRACE("description.flags & F_CONNECTED = 0x%x", description.flags & F_CONNECTED);
-    // switch (description.flags & F_CONNECTED) {
-    //     case F_NCONNECTED: {
-    //         // if (!(tcph->syn) && tcph->ack) {
-    //         //     return XDP_DROP;
-    //         // }
-
-    //         TRACE("get tcp.syn");
-
-    //         struct node rs = { .port = tcph->dest }; // Network Byte Order
-
-    //         // Round-robbin select
-    //         if (0 != get_next_rs(&rs)) // Network Byte Order
-    //             return XDP_DROP;
-    //         TRACE("got new rs");
-    //         print_ip("rs->addr ", rs.addr);
-
-    //         // Round-robbin select
-    //         struct node subnet = {};
-    //         if (0 != get_next_subnet(&subnet)) // Network Byte Order
-    //             return XDP_DROP;
-
-    //         TRACE("got new subnet");
-    //         print_ip("subnet->addr ", subnet.addr);
-
-    //         description.flags |= F_SYN;
-    //         description.real   = rs;
-    //         description.subnet.addr = subnet.addr;
-    //         description.subnet.port = subnet.port;
-
-    //         print_ip("process_client_packet subnet.addr", subnet.addr);
-    //         TRACE("process_client_packet subnet.port %d", subnet.port);
-
-    //         struct reverse_description rev = {};
-    //         rev.client.addr   = client.addr;
-    //         rev.client.port   = client.port;
-    //         rev.vip.addr = iph->daddr;
-    //         rev.vip.port = tcph->dest;
-
-    //         if (0 != bpf_map_update_elem(&revers_map, &subnet, &rev, BPF_NOEXIST)) {
-    //             TRACE("session exists");
-    //             return XDP_DROP;
-    //         }
-
-    //         if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
-    //             TRACE("cant update session_map");
-    //             return XDP_DROP;
-    //         }
-
-    //         break;
-    //     }
-
-    //     case F_SYN | F_SYN_ACK: {
-    //         TRACE("case F_SYN | F_SYN_ACK");
-    //         // if (!(tcph->ack))
-    //             // return XDP_DROP;
-
-    //         if (tcph->ack) {
-    //             TRACE("get tcp.ack");
-    //             description.flags |= F_ACK;
-
-    //             if (0 != bpf_map_update_elem(&session_map, &client, &description, BPF_ANY)) {
-    //                 TRACE("cant update session_map");
-    //                 return XDP_DROP;
-    //             }
-    //         }
-    //         break;
-    //     }
-
-    //     case F_CONNECTED: {
-    //         if (tcph->fin) {
-
-    //         }
-    //         break;
-    //     }
-
-    // }
-
-
     switch (description.state) {
         case tcp_ncon: {
+            TRACE("sessiom->state tcp_ncon");
             if (tcph->syn && !(tcph->ack)) {
                 description.state = tcp_opening;
                 description.flags  |= F_SYN;
@@ -333,6 +255,7 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
             break;
         }
         case tcp_con: {
+            TRACE("sessiom->state tcp_con");
             TRACE("tcp.fin %d tcp.ack %d", tcph->fin, tcph->ack);
             if (tcph->fin && description.flags == F_CONNECTED) {
                 TRACE("got tcp.fin");
@@ -348,6 +271,7 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
             break;
         }
         case tcp_opening: {
+            TRACE("sessiom->state tcp_opening");
             if (tcph->ack && !(tcph->syn) && description.flags == (F_SYN | F_SYN_ACK)) {
                 description.state = tcp_con;
                 description.flags |= F_ACK;
@@ -358,11 +282,13 @@ int process_client_packet(struct iphdr* iph, struct tcphdr* tcph) {
                     return XDP_DROP;
                 }
             }
+            break;
         }
         case tcp_closing:
+            TRACE("sessiom->state tcp_closing");
             if (tcph->ack && !(tcph->fin)) {
-                // bpf_map_delete_elem(&revers_map, &description.subnet);
-                // bpf_map_delete_elem(&session_map, &client);
+                bpf_map_delete_elem(&revers_map, &description.subnet);
+                bpf_map_delete_elem(&session_map, &client);
 
                 TRACE("got tcp.ack");
                 TRACE("move to state -> tcp_ncon");
@@ -411,8 +337,11 @@ int process_server_packet(struct iphdr* iph, struct tcphdr* tcph) {
         return XDP_DROP;
     }
 
+    TRACE("tcph->syn %d tcph->ack %d", tcph->syn, tcph->ack);
+
     if (tcph->syn && tcph->ack) {
         session->flags |= F_SYN_ACK;
+        TRACE("got tcp.syn_ack");
 
         if (0 != bpf_map_update_elem(&session_map, &client, session, BPF_EXIST)) {
             TRACE("Can`t update session_map");
