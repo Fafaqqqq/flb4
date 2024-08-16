@@ -178,7 +178,7 @@ private:
                 uint32_t from_addr = inet_addr(group["from_addr"].as<std::string>().c_str());
                 uint32_t to_addr   = inet_addr(group["to_addr"].as<std::string>().c_str());
 
-                uint32_t i = 0;
+                i = 0;
                 for (uint32_t addr = ntohl(from_addr); addr <= ntohl(to_addr); addr++) {
                     rs_map_hash_.push(htonl(addr), 1, BpfAdapter::ITEM_NOEXIST);
                     rs_map_array_.push(i + 1, htonl(addr), BpfAdapter::ITEM_ANY);

@@ -39,14 +39,14 @@ struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, struct node);
   __type(value, struct reverse_description);
-  __uint(max_entries, 10);
+  __uint(max_entries, MAX_SESSIONS);
 } revers_map SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, struct node);
   __type(value, struct session_description);
-  __uint(max_entries, 10);
+  __uint(max_entries, MAX_SESSIONS);
 } session_map SEC(".maps");
 
 

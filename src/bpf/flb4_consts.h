@@ -3,9 +3,10 @@
 
 #define AF_INET 2
 
-#define MAX_VS 10
-#define MAX_RS 4096
-#define MAX_SUBNET 512
+#define MAX_VS      (10)
+#define MAX_RS      (4096)
+#define MAX_SUBNET  (512)
+#define MAX_SESSIONS (2000000)
 
 #define NO_FLAGS 0
 
